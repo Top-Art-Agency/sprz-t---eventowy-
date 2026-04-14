@@ -710,7 +710,8 @@ function renderEvents() {
             <td class="mono">${e.date_end||'—'}</td>
             <td><span class="badge" style="background:var(--bg3);color:var(--text2);cursor:pointer" onclick="openEventDetail('${e.id}')">${count} szt.</span></td>
             <td class="muted" style="font-size:13px">${esc(e.uwagi||'—')}</td>
-            <td style="text-align:right">
+            <td style="text-align:right;white-space:nowrap">
+              ${state.isAdmin ? `<button class="btn btn-sm btn-ghost" onclick="openEditEvent('${e.id}')">Edytuj</button>` : ''}
               <button class="btn btn-sm btn-ghost" onclick="openEventDetail('${e.id}')">Zarządzaj sprzętem →</button>
             </td>
           </tr>`;
@@ -720,6 +721,7 @@ function renderEvents() {
 }
 
 function openEventDetail(id) { state.selectedEventId = id; state.evSearch = ''; render(); }
+function openEditEvent(id) { state._editEventId = id; state.modal = 'event-edit'; render(); }
 function closeEventDetail() { state.selectedEventId = null; render(); }
 
 function renderEventDetail(eventId) {
@@ -781,16 +783,16 @@ function renderEventDetail(eventId) {
         <tbody>${allItems.map(i => {
           const isAssigned = i.event_id === eventId;
           const isOtherEvent = i.event_id && i.event_id !== eventId;
-          return `<tr style="${isAssigned?'background:rgba(124,106,247,0.06)':isOtherEvent?'opacity:0.5':''}">
+          return `<tr style="${isAssigned?'background:rgba(124,106,247,0.06)':''}">
             <td>
-              <input type="checkbox" ${isAssigned?'checked':''} ${isOtherEvent?'disabled title="Sprzęt przypisany do innego eventu"':''}
+              <input type="checkbox" ${isAssigned?'checked':''}
                 onchange="toggleEventAssign('${i.id}','${eventId}',this.checked)"
-                style="width:16px;height:16px;cursor:${isOtherEvent?'not-allowed':'pointer'};accent-color:var(--accent)">
+                style="width:16px;height:16px;cursor:pointer;accent-color:var(--accent)">
             </td>
             <td class="name">
               <div style="display:flex;flex-direction:column;gap:4px">
                 <span>${esc(i.nazwa)}${isAssigned?` <span style="font-size:11px;color:var(--accent2);font-family:var(--mono)">✓</span>`:''}</span>
-                ${isOtherEvent ? evBadge(i.event_id) : ''}
+                ${isOtherEvent ? `<div style="display:flex;align-items:center;gap:5px">${evBadge(i.event_id)}<span style="font-size:11px;color:var(--amber);font-family:var(--mono)">⚠ zajęty</span></div>` : ''}
               </div>
             </td>
             <td class="muted">${esc(i.kategoria||'—')}</td>
@@ -861,6 +863,7 @@ function renderHistory() {
 function renderModal() {
   if (state.modal === 'add' || state.modal === 'edit') return renderItemModal();
   if (state.modal === 'event-add') return renderEventModal();
+  if (state.modal === 'event-edit') return renderEventModal(true);
   if (state.modal === 'detail') return renderDetailModal();
   if (state.modal === 'cat-add') return renderCatModal();
   if (state.modal === 'cat-edit') return renderCatModal(true);
@@ -919,32 +922,35 @@ function renderItemModal() {
   </div>`;
 }
 
-function renderEventModal() {
+function renderEventModal(isEdit=false) {
+  const ev = isEdit ? (state.events.find(e=>e.id===state._editEventId)||{}) : {};
+  const evKolor = ev.kolor || EVENT_COLORS[0];
   return `<div class="modal-overlay" onclick="closeModal(event)">
     <div class="modal" onclick="event.stopPropagation()">
-      <div class="modal-header"><h3>Nowy event</h3><button class="modal-close" onclick="closeModal()">✕</button></div>
+      <div class="modal-header"><h3>${isEdit?'Edytuj event':'Nowy event'}</h3><button class="modal-close" onclick="closeModal()">✕</button></div>
       <div class="modal-body">
-        <div class="field"><label>Nazwa eventu *</label><input id="e-nazwa" placeholder="np. Gala Roczna 2025"></div>
+        <div class="field"><label>Nazwa eventu *</label><input id="e-nazwa" placeholder="np. Gala Roczna 2025" value="${esc(ev.nazwa||'')}"></div>
         <div class="form-row">
-          <div class="field"><label>Miasto</label><input id="e-miasto" placeholder="np. Warszawa"></div>
+          <div class="field"><label>Miasto</label><input id="e-miasto" placeholder="np. Warszawa" value="${esc(ev.miasto||'')}"></div>
           <div class="field"></div>
         </div>
         <div class="form-row">
-          <div class="field"><label>Data rozpoczęcia</label><input id="e-start" type="date"></div>
-          <div class="field"><label>Data zakończenia</label><input id="e-end" type="date"></div>
+          <div class="field"><label>Data rozpoczęcia</label><input id="e-start" type="date" value="${ev.date_start||''}"></div>
+          <div class="field"><label>Data zakończenia</label><input id="e-end" type="date" value="${ev.date_end||''}"></div>
         </div>
         <div class="field">
           <label>Kolor eventu</label>
           <div class="color-picker-row" id="e-color-picker">
-            ${EVENT_COLORS.map((c,i) => `<div class="color-swatch ${i===0?'selected':''}" style="background:${c}" data-color="${c}" onclick="selectEventColor(this)"></div>`).join('')}
+            ${EVENT_COLORS.map((c,i) => `<div class="color-swatch ${c===evKolor?'selected':''}" style="background:${c}" data-color="${c}" onclick="selectEventColor(this)"></div>`).join('')}
           </div>
-          <input type="hidden" id="e-color" value="${EVENT_COLORS[0]}">
+          <input type="hidden" id="e-color" value="${evKolor}">
         </div>
-        <div class="field"><label>Uwagi</label><textarea id="e-uwagi"></textarea></div>
+        <div class="field"><label>Uwagi</label><textarea id="e-uwagi">${esc(ev.uwagi||'')}</textarea></div>
       </div>
       <div class="modal-footer">
         <button class="btn" onclick="closeModal()">Anuluj</button>
-        <button class="btn btn-primary" onclick="submitEvent()">Zapisz event</button>
+        ${isEdit && state.isAdmin ? `<button class="btn btn-danger" onclick="confirmDeleteEvent('${ev.id}')">Usuń event</button>` : ''}
+        <button class="btn btn-primary" onclick="submitEvent(${isEdit})">Zapisz event</button>
       </div>
     </div>
   </div>`;
@@ -1045,7 +1051,7 @@ function selectEventColor(el) {
   document.getElementById('e-color').value = el.dataset.color;
 }
 
-async function submitEvent() {
+async function submitEvent(isEdit=false) {
   const nazwa = document.getElementById('e-nazwa')?.value?.trim();
   if (!nazwa) { toast('Podaj nazwę eventu','error'); return; }
   const ev = {
@@ -1056,8 +1062,30 @@ async function submitEvent() {
     uwagi: document.getElementById('e-uwagi').value.trim()||null,
     kolor: document.getElementById('e-color')?.value || EVENT_COLORS[0],
   };
-  const ok = await saveEvent(ev);
-  if (ok) { state.modal=null; await loadEvents(); render(); }
+  if (isEdit) {
+    const { error } = await sb.from('events').update(ev).eq('id', state._editEventId);
+    if (error) { toast('Błąd: '+error.message,'error'); return; }
+    toast('Zaktualizowano event');
+  } else {
+    const ok = await saveEvent(ev);
+    if (!ok) return;
+  }
+  state.modal=null; state._editEventId=null;
+  await loadEvents(); render();
+}
+
+async function confirmDeleteEvent(id) {
+  const ev = state.events.find(e=>e.id===id);
+  const count = state.items.filter(i=>i.event_id===id).length;
+  const msg = count > 0
+    ? `Event "${ev?.nazwa}" ma ${count} przypisanych pozycji sprzętu. Usunięcie eventu odepnie sprzęt. Kontynuować?`
+    : `Usunąć event "${ev?.nazwa}"?`;
+  if (!confirm(msg)) return;
+  if (count > 0) await sb.from('equipment').update({event_id: null}).eq('event_id', id);
+  await sb.from('events').delete().eq('id', id);
+  toast('Usunięto event');
+  state.modal=null; state._editEventId=null;
+  await loadEvents(); await loadItems(); render();
 }
 
 function confirmDelete(id) {
