@@ -107,7 +107,13 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 
 /* ─── STATS ─── */
 .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap: 12px; margin-bottom: 28px; }
-.stat-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 18px 20px; }
+.stat-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 18px 20px; cursor: pointer; transition: border-color .15s, transform .1s; }
+.stat-card:hover { border-color: var(--border2); transform: translateY(-1px); }
+.stat-card.active { border-width: 2px; }
+.stat-card.s-ok.active { border-color: var(--green); }
+.stat-card.s-low.active { border-color: var(--amber); }
+.stat-card.s-repair.active { border-color: var(--purple); }
+.stat-card.s-total.active { border-color: var(--accent); }
 .stat-label { font-size: 12px; color: var(--text3); font-family: var(--mono); letter-spacing: .05em; margin-bottom: 8px; }
 .stat-val { font-size: 28px; font-weight: 600; font-family: var(--mono); }
 .stat-card.s-ok .stat-val { color: var(--green); }
@@ -639,10 +645,18 @@ function renderInventory() {
       </div>
     </div>
     <div class="stats-grid">
-      <div class="stat-card s-total"><div class="stat-label">Łącznie</div><div class="stat-val">${total}</div></div>
-      <div class="stat-card s-ok"><div class="stat-label">Stan OK</div><div class="stat-val">${ok}</div></div>
-      <div class="stat-card s-low"><div class="stat-label">Niski stan</div><div class="stat-val">${low}</div></div>
-      <div class="stat-card s-repair"><div class="stat-label">W naprawie</div><div class="stat-val">${repair}</div></div>
+      <div class="stat-card s-total ${fs===''?'active':''}" onclick="filterByStan('')">
+        <div class="stat-label">Łącznie</div><div class="stat-val">${total}</div>
+      </div>
+      <div class="stat-card s-ok ${fs==='OK'?'active':''}" onclick="filterByStan('OK')">
+        <div class="stat-label">Stan OK</div><div class="stat-val">${ok}</div>
+      </div>
+      <div class="stat-card s-low ${fs==='Niski stan'?'active':''}" onclick="filterByStan('Niski stan')">
+        <div class="stat-label">Niski stan</div><div class="stat-val">${low}</div>
+      </div>
+      <div class="stat-card s-repair ${fs==='W naprawie'?'active':''}" onclick="filterByStan('W naprawie')">
+        <div class="stat-label">W naprawie</div><div class="stat-val">${repair}</div>
+      </div>
     </div>
     <div class="filters">
       <input type="text" placeholder="Szukaj nazwy, kategorii, SN..." value="${esc(state.search)}" id="search-input">
@@ -1018,6 +1032,10 @@ function closeModal(e) { if (e && e.target !== e.currentTarget) return; state.mo
 function openEdit(id) { state.editItem = state.items.find(i=>i.id===id); state.modal='edit'; render(); }
 function openDetail(id) { state.detailItem = state.items.find(i=>i.id===id); state.modal='detail'; render(); }
 function setView(v) { state.view=v; render(); }
+function filterByStan(stan) {
+  state.filterStan = state.filterStan === stan ? '' : stan;
+  render();
+}
 async function logout() {
   await sb.auth.signOut();
   state.authUser = null;
