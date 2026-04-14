@@ -238,7 +238,9 @@ td.muted { color: var(--text2); font-size: 13px; }
 <script>
 const SUPABASE_URL    = 'https://yxbwhwmntvdzvwlanczf.supabase.co';
 const SUPABASE_ANON   = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl4Yndod21udHZkenZ3bGFuY3pmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYxMzYwMzMsImV4cCI6MjA5MTcxMjAzM30.-zqRhNYSwcIqsZU7HTt5dpbbNypFUq7Fz1_dZ4xwXoA';
-const APP_VERSION     = '1.0.0';
+const APP_VERSION     = '1.2.0';
+const ALLOWED_DOMAIN  = 'topart.pl';
+const ADMIN_EMAILS    = [];  // np. ['adam@topart.pl'] — admini mogą edytować i usuwać
 </script>
 
 <!-- ════ APP ════ -->
@@ -250,26 +252,70 @@ const APP_VERSION     = '1.0.0';
 let sb;
 try {
   if (SUPABASE_URL !== 'TWOJ_SUPABASE_URL') {
-    sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+    sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON, {
+      auth: { redirectTo: window.location.href }
+    });
   }
 } catch(e) { console.error('Supabase init error:', e); }
 
 // ─── STATE ───
 let state = {
-  view: 'inventory',      // inventory | history | events | categories
+  view: 'inventory',
   items: [],
   history: [],
   events: [],
   categories: [],
+  users: [],
   loading: true,
+  authLoading: true,
   search: '',
   filterKat: '',
   filterStan: '',
-  modal: null,            // null | 'add' | 'edit' | 'event-add' | 'detail' | 'cat-add'
+  modal: null,
   editItem: null,
   detailItem: null,
-  currentUser: localStorage.getItem('eq_user') || '',
+  authUser: null,         // obiekt Supabase user
+  isAdmin: false,
 };
+
+function getUserName() {
+  if (!state.authUser) return '';
+  return state.authUser.user_metadata?.full_name || state.authUser.email || '';
+}
+function getUserInitials() {
+  const n = getUserName();
+  return n.split(' ').map(w=>w[0]||'').join('').slice(0,2).toUpperCase() || '??';
+}
+function checkAdmin() {
+  if (!state.authUser) return false;
+  // Sprawdź rolę z profilu
+  const profile = (state.users||[]).find(u => u.email === state.authUser.email);
+  if (profile) return profile.role === 'admin';
+  // Fallback: lista adminów w kodzie
+  if (ADMIN_EMAILS.length > 0) return ADMIN_EMAILS.includes(state.authUser.email);
+  return true; // jeśli brak profilu i brak listy — traktuj jako admin (pierwszy użytkownik)
+}
+
+async function syncUserProfile(user) {
+  // Utwórz lub zaktualizuj profil użytkownika przy logowaniu
+  const { data } = await sb.from('user_profiles').select('*').eq('email', user.email).single();
+  if (!data) {
+    // Pierwszy raz — utwórz profil (domyślna rola: admin dla pierwszego, user dla kolejnych)
+    const { count } = await sb.from('user_profiles').select('*', {count:'exact',head:true});
+    const role = (count === 0) ? 'admin' : 'user';
+    await sb.from('user_profiles').insert({
+      email: user.email,
+      full_name: user.user_metadata?.full_name || user.email.split('@')[0],
+      role,
+      auth_id: user.id
+    });
+  } else {
+    // Zaktualizuj auth_id jeśli brak
+    if (!data.auth_id) await sb.from('user_profiles').update({ auth_id: user.id }).eq('email', user.email);
+  }
+  // Załaduj świeże dane profilu
+  await loadUsers();
+}
 
 // ─── TOAST ───
 function toast(msg, type='success') {
@@ -305,15 +351,21 @@ async function loadCategories() {
   if (!error) state.categories = data || [];
 }
 
+async function loadUsers() {
+  if (!sb || !state.isAdmin) return;
+  const { data, error } = await sb.from('user_profiles').select('*').order('created_at');
+  if (!error) state.users = data || [];
+}
+
 async function loadAll() {
   state.loading = true; render();
-  await Promise.all([loadItems(), loadHistory(), loadEvents(), loadCategories()]);
+  await Promise.all([loadItems(), loadHistory(), loadEvents(), loadCategories(), loadUsers()]);
   state.loading = false; render();
 }
 
 async function saveItem(item, isEdit) {
   if (!sb) { toast('Brak połączenia z bazą', 'error'); return false; }
-  const user = state.currentUser || 'nieznany';
+  const user = getUserName() || 'nieznany';
   if (isEdit) {
     const old = state.items.find(i => i.id === item.id);
     const { error } = await sb.from('equipment').update(item).eq('id', item.id);
@@ -337,7 +389,7 @@ async function saveItem(item, isEdit) {
 async function deleteItem(id) {
   if (!sb) return;
   const item = state.items.find(i => i.id === id);
-  await sb.from('equipment_history').insert({ equipment_id: id, action: 'usunięcie', user_name: state.currentUser || 'nieznany', details: `Usunięto: ${item?.nazwa}` });
+  await sb.from('equipment_history').insert({ equipment_id: id, action: 'usunięcie', user_name: getUserName() || 'nieznany', details: `Usunięto: ${item?.nazwa}` });
   await sb.from('equipment').delete().eq('id', id);
   toast('Usunięto pozycję');
   await loadItems(); await loadHistory(); render();
@@ -357,8 +409,11 @@ function render() {
   if (!SUPABASE_URL || SUPABASE_URL === 'TWOJ_SUPABASE_URL') {
     app.innerHTML = renderConfig(); return;
   }
-  if (!state.currentUser) {
-    app.innerHTML = renderUserPrompt(); return;
+  if (state.authLoading) {
+    app.innerHTML = `<div class="loading" style="min-height:100vh"><div class="spinner"></div></div>`; return;
+  }
+  if (!state.authUser) {
+    app.innerHTML = renderLoginScreen(); return;
   }
   app.innerHTML = `
     <div class="layout">
@@ -431,30 +486,48 @@ CREATE POLICY "public_all" ON equipment_history FOR ALL USING (true) WITH CHECK 
   </div></div>`;
 }
 
-function renderUserPrompt() {
-  return `<div style="display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px">
-    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:36px;width:100%;max-width:380px">
-      <div style="font-family:var(--mono);font-size:11px;color:var(--accent2);letter-spacing:.1em;margin-bottom:8px">SPRZĘT EVENTOWY</div>
-      <h2 style="font-size:20px;font-weight:600;margin-bottom:8px">Witaj!</h2>
-      <p style="font-size:14px;color:var(--text2);margin-bottom:24px;line-height:1.6">Podaj swoje imię i nazwisko — będzie widoczne w historii zmian.</p>
-      <div class="field"><label>Twoje imię i nazwisko</label>
-        <input id="user-input" type="text" placeholder="np. Jan Kowalski" style="width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-family:var(--font);font-size:14px;padding:9px 12px;outline:none">
-      </div>
-      <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:8px" onclick="setUser()">Wejdź →</button>
+function renderLoginScreen() {
+  return `<div style="display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;background:var(--bg)">
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:44px 36px;width:100%;max-width:400px;text-align:center">
+      <div style="font-family:var(--mono);font-size:11px;color:var(--accent2);letter-spacing:.1em;margin-bottom:16px">SPRZĘT EVENTOWY</div>
+      <h2 style="font-size:22px;font-weight:600;margin-bottom:8px">Zaloguj się</h2>
+      <p style="font-size:14px;color:var(--text2);margin-bottom:32px;line-height:1.6">Dostęp tylko dla kont <span style="color:var(--accent2);font-family:var(--mono)">@${ALLOWED_DOMAIN}</span></p>
+      <button class="btn" onclick="loginGoogle()" style="width:100%;justify-content:center;margin-bottom:12px;height:44px;font-size:15px;gap:10px">
+        <svg width="18" height="18" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+        Zaloguj przez Google
+      </button>
+      <button class="btn" onclick="loginMicrosoft()" style="width:100%;justify-content:center;height:44px;font-size:15px;gap:10px">
+        <svg width="18" height="18" viewBox="0 0 24 24"><rect x="1" y="1" width="10" height="10" fill="#F25022"/><rect x="13" y="1" width="10" height="10" fill="#7FBA00"/><rect x="1" y="13" width="10" height="10" fill="#00A4EF"/><rect x="13" y="13" width="10" height="10" fill="#FFB900"/></svg>
+        Zaloguj przez Microsoft
+      </button>
+      <div id="login-error" style="margin-top:16px;font-size:13px;color:var(--red);display:none"></div>
     </div>
   </div>`;
 }
 
-function setUser() {
-  const v = document.getElementById('user-input')?.value?.trim();
-  if (!v) return;
-  state.currentUser = v;
-  localStorage.setItem('eq_user', v);
-  loadAll();
+async function loginGoogle() {
+  const { error } = await sb.auth.signInWithOAuth({
+    provider: 'google',
+    options: { redirectTo: window.location.href, queryParams: { hd: ALLOWED_DOMAIN } }
+  });
+  if (error) showLoginError(error.message);
+}
+
+async function loginMicrosoft() {
+  const { error } = await sb.auth.signInWithOAuth({
+    provider: 'azure',
+    options: { redirectTo: window.location.href, scopes: 'email' }
+  });
+  if (error) showLoginError(error.message);
+}
+
+function showLoginError(msg) {
+  const el = document.getElementById('login-error');
+  if (el) { el.textContent = msg; el.style.display = 'block'; }
 }
 
 function renderSidebar() {
-  const initials = state.currentUser.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
+  const avatar = state.authUser?.user_metadata?.avatar_url;
   return `<nav class="sidebar">
     <div class="logo">
       <div class="logo-mark">v${APP_VERSION}</div>
@@ -474,13 +547,21 @@ function renderSidebar() {
       <button class="nav-item ${state.view==='categories'?'active':''}" onclick="setView('categories')">
         ${ico('tag')} Kategorie
       </button>
+      ${state.isAdmin ? `
+      <button class="nav-item ${state.view==='users'?'active':''}" onclick="setView('users')">
+        ${ico('users')} Użytkownicy
+      </button>` : ''}
     </div>
     <div class="sidebar-footer">
       <div class="user-row">
-        <div class="avatar">${initials}</div>
-        <div><div class="user-name">${esc(state.currentUser)}</div>
-        <div class="user-role">operator</div></div>
-        <div style="margin-left:auto;display:flex;gap:6px">
+        ${avatar
+          ? `<img src="${avatar}" style="width:30px;height:30px;border-radius:50%;object-fit:cover;flex-shrink:0">`
+          : `<div class="avatar">${getUserInitials()}</div>`}
+        <div style="min-width:0;overflow:hidden">
+          <div class="user-name" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(getUserName())}</div>
+          <div class="user-role">${state.isAdmin ? 'admin' : 'użytkownik'}</div>
+        </div>
+        <div style="margin-left:auto;display:flex;gap:6px;flex-shrink:0">
           <button class="theme-toggle" onclick="toggleTheme()" title="Zmień motyw">${document.documentElement.classList.contains('light') ? ico('moon') : ico('theme')}</button>
           <button class="btn btn-ghost btn-sm" onclick="logout()" title="Wyloguj">⇤</button>
         </div>
@@ -495,6 +576,7 @@ function renderMain() {
   if (state.view === 'events') return renderEvents();
   if (state.view === 'history') return renderHistory();
   if (state.view === 'categories') return renderCategories();
+  if (state.view === 'users') return renderUsers();
   return '';
 }
 
@@ -523,8 +605,10 @@ function renderInventory() {
       <div><div class="page-title">Inwentaryzacja</div><div class="page-subtitle">${total} pozycji w bazie</div></div>
       <div class="topbar-actions">
         <button class="btn" onclick="exportCSV()">↓ CSV</button>
+        <button class="btn" onclick="generatePDF()">⎙ Raport PDF</button>
+        ${state.isAdmin ? `
         <button class="btn" onclick="openModal('import')">↑ Import CSV/Excel</button>
-        <button class="btn btn-primary" onclick="openModal('add')">+ Dodaj sprzęt</button>
+        <button class="btn btn-primary" onclick="openModal('add')">+ Dodaj sprzęt</button>` : ''}
       </div>
     </div>
     <div class="stats-grid">
@@ -561,8 +645,9 @@ function renderInventory() {
           <td>${i.event_id && evMap[i.event_id] ? `<span class="event-tag">${esc(evMap[i.event_id])}</span>` : '<span class="muted">—</span>'}</td>
           <td class="mono">${i.data_wypozyczenia||'—'}</td>
           <td style="text-align:right;white-space:nowrap">
+            ${state.isAdmin ? `
             <button class="btn btn-sm btn-ghost" onclick="openEdit('${i.id}')">Edytuj</button>
-            <button class="btn btn-sm btn-danger" onclick="confirmDelete('${i.id}')">Usuń</button>
+            <button class="btn btn-sm btn-danger" onclick="confirmDelete('${i.id}')">Usuń</button>` : ''}
           </td>
         </tr>`).join('')}</tbody>
       </table>`}
@@ -635,6 +720,7 @@ function renderModal() {
   if (state.modal === 'cat-add') return renderCatModal();
   if (state.modal === 'cat-edit') return renderCatModal(true);
   if (state.modal === 'import') return renderImportModal();
+  if (state.modal === 'invite') return renderInviteModal();
   return '';
 }
 
@@ -771,7 +857,12 @@ function closeModal(e) { if (e && e.target !== e.currentTarget) return; state.mo
 function openEdit(id) { state.editItem = state.items.find(i=>i.id===id); state.modal='edit'; render(); }
 function openDetail(id) { state.detailItem = state.items.find(i=>i.id===id); state.modal='detail'; render(); }
 function setView(v) { state.view=v; render(); }
-function logout() { localStorage.removeItem('eq_user'); state.currentUser=''; render(); }
+async function logout() {
+  await sb.auth.signOut();
+  state.authUser = null;
+  state.isAdmin = false;
+  render();
+}
 
 async function submitItem() {
   const nazwa = document.getElementById('f-nazwa')?.value?.trim();
@@ -933,10 +1024,109 @@ function ico(name) {
     calendar: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="3" width="14" height="12" rx="1"/><path d="M1 7h14M5 1v4M11 1v4"/></svg>`,
     clock: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.5V8l2.5 2"/></svg>`,
     tag: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 1h6l7 7-6 6-7-7V1z"/><circle cx="4.5" cy="4.5" r="1" fill="currentColor" stroke="none"/></svg>`,
+    users: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6" cy="5" r="2.5"/><path d="M1 13c0-2.76 2.24-5 5-5s5 2.24 5 5"/><circle cx="12" cy="5" r="2"/><path d="M15 13c0-2.21-1.34-4-3-4"/></svg>`,
     theme: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="3.5"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.1 3.1l1.4 1.4M11.5 11.5l1.4 1.4M3.1 12.9l1.4-1.4M11.5 4.5l1.4-1.4"/></svg>`,
     moon: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13.5 10A6 6 0 016 2.5a6 6 0 100 11 6 6 0 007.5-3.5z"/></svg>`,
   };
   return icons[name] || '';
+}
+
+// ─── USERS VIEW ───
+function renderUsers() {
+  const users = state.users || [];
+  return `
+    <div class="topbar">
+      <div><div class="page-title">Użytkownicy</div><div class="page-subtitle">${users.length} kont w systemie</div></div>
+      <div class="topbar-actions">
+        <button class="btn btn-primary" onclick="openModal('invite')">+ Zaproś użytkownika</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      ${!users.length ? `<div class="empty"><div class="empty-icon">👥</div><p>Brak użytkowników. Zaproś pierwszą osobę.</p></div>` : `
+      <table>
+        <thead><tr><th>Email</th><th>Imię i nazwisko</th><th>Rola</th><th>Dodano</th><th></th></tr></thead>
+        <tbody>${users.map(u => {
+          const isMe = u.email === state.authUser?.email;
+          const d = new Date(u.created_at).toLocaleDateString('pl-PL');
+          return `<tr>
+            <td class="mono" style="font-size:13px">${esc(u.email)}${isMe?' <span style="color:var(--accent2);font-size:11px">(ty)</span>':''}</td>
+            <td>${esc(u.full_name||'—')}</td>
+            <td>
+              <select onchange="updateRole('${u.id}',this.value)" style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:13px;padding:3px 8px;font-family:var(--font)" ${isMe?'disabled':''}>
+                <option value="user" ${u.role==='user'?'selected':''}>Użytkownik</option>
+                <option value="admin" ${u.role==='admin'?'selected':''}>Admin</option>
+              </select>
+            </td>
+            <td class="mono" style="font-size:12px;color:var(--text3)">${d}</td>
+            <td style="text-align:right">
+              ${!isMe ? `<button class="btn btn-sm btn-danger" onclick="removeUser('${u.id}','${esc(u.email)}')">Usuń</button>` : ''}
+            </td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>`}
+    </div>`;
+}
+
+function renderInviteModal() {
+  return `<div class="modal-overlay" onclick="closeModal(event)">
+    <div class="modal" onclick="event.stopPropagation()" style="max-width:420px">
+      <div class="modal-header"><h3>Zaproś użytkownika</h3><button class="modal-close" onclick="closeModal()">✕</button></div>
+      <div class="modal-body">
+        <div class="field"><label>Email *</label><input id="inv-email" type="email" placeholder="jan@topart.pl"></div>
+        <div class="field"><label>Imię i nazwisko</label><input id="inv-name" placeholder="Jan Kowalski"></div>
+        <div class="field"><label>Rola</label>
+          <select id="inv-role">
+            <option value="user">Użytkownik — tylko przegląd</option>
+            <option value="admin">Admin — pełny dostęp</option>
+          </select>
+        </div>
+        <div style="background:var(--bg3);border-radius:var(--radius);padding:10px 12px;font-size:12px;color:var(--text2);margin-top:4px">
+          Osoba otrzyma email z linkiem do ustawienia hasła.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" onclick="closeModal()">Anuluj</button>
+        <button class="btn btn-primary" onclick="submitInvite()">Wyślij zaproszenie</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function submitInvite() {
+  const email = document.getElementById('inv-email')?.value?.trim();
+  const name  = document.getElementById('inv-name')?.value?.trim();
+  const role  = document.getElementById('inv-role')?.value;
+  if (!email) { toast('Podaj email','error'); return; }
+  if (!email.endsWith('@' + ALLOWED_DOMAIN)) { toast('Tylko konta @' + ALLOWED_DOMAIN,'error'); return; }
+  // Zapisz profil w bazie (użytkownik zostanie utworzony przy pierwszym logowaniu)
+  const { error } = await sb.from('user_profiles').upsert({ email, full_name: name||null, role }, { onConflict: 'email' });
+  if (error) { toast('Błąd: '+error.message,'error'); return; }
+  // Wyślij invite przez Supabase Auth (wymaga service role — zamiast tego użyj reset password)
+  const { error: e2 } = await sb.auth.resetPasswordForEmail(email, { redirectTo: window.location.href });
+  if (e2 && !e2.message.includes('not found')) { toast('Błąd wysyłki: '+e2.message,'error'); return; }
+  toast('Zaproszenie wysłane na '+email);
+  state.modal = null;
+  await loadUsers(); render();
+}
+
+async function updateRole(id, role) {
+  const { error } = await sb.from('user_profiles').update({ role }).eq('id', id);
+  if (error) { toast('Błąd: '+error.message,'error'); return; }
+  toast('Zaktualizowano rolę');
+  await loadUsers();
+  // Odśwież własną rolę jeśli zmieniono siebie
+  const u = (state.users||[]).find(x=>x.id===id);
+  if (u?.email === state.authUser?.email) {
+    state.isAdmin = role === 'admin';
+  }
+  render();
+}
+
+async function removeUser(id, email) {
+  if (!confirm(`Usunąć użytkownika ${email}?`)) return;
+  await sb.from('user_profiles').delete().eq('id', id);
+  toast('Usunięto użytkownika');
+  await loadUsers(); render();
 }
 
 // ─── IMPORT CSV/EXCEL ───
@@ -1049,7 +1239,7 @@ async function executeImport() {
   if (!importRows.length) { toast('Najpierw wybierz plik','error'); return; }
   if (!sb) { toast('Brak połączenia z bazą','error'); return; }
   let ok=0, fail=0;
-  const user = state.currentUser || 'import';
+  const user = getUserName() || 'import';
   for (const row of importRows) {
     const { data, error } = await sb.from('equipment').insert(row).select().single();
     if (!error) {
@@ -1061,6 +1251,48 @@ async function executeImport() {
   importRows = [];
   state.modal = null;
   await loadItems(); await loadHistory(); render();
+}
+
+// ─── PDF REPORT ───
+function generatePDF() {
+  const evMap = {};
+  state.events.forEach(e => evMap[e.id] = e.nazwa);
+  const date = new Date().toLocaleDateString('pl-PL');
+  const rows = state.items.map(i => `
+    <tr>
+      <td>${esc(i.nazwa)}</td>
+      <td>${esc(i.kategoria||'—')}</td>
+      <td style="text-align:center">${i.ilosc}</td>
+      <td>${esc(i.stan)}</td>
+      <td>${esc(i.lokalizacja||'—')}</td>
+      <td>${esc(i.sn||'—')}</td>
+      <td>${i.event_id && evMap[i.event_id] ? esc(evMap[i.event_id]) : '—'}</td>
+      <td>${esc(i.uwagi||'—')}</td>
+    </tr>`).join('');
+  const html = `<!DOCTYPE html><html lang="pl"><head><meta charset="UTF-8">
+  <title>Raport inwentaryzacji</title>
+  <style>
+    body { font-family: Arial, sans-serif; font-size: 11px; color: #111; margin: 20px; }
+    h1 { font-size: 18px; margin-bottom: 4px; }
+    .meta { color: #666; font-size: 11px; margin-bottom: 16px; }
+    table { width: 100%; border-collapse: collapse; }
+    th { background: #1a1a2e; color: #fff; padding: 7px 8px; text-align: left; font-size: 10px; letter-spacing: .05em; }
+    td { padding: 6px 8px; border-bottom: 1px solid #e5e5e5; vertical-align: top; }
+    tr:nth-child(even) td { background: #f9f9f9; }
+    .badge { display:inline-block; padding: 2px 7px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+    @media print { body { margin: 0; } }
+  </style></head><body>
+  <h1>Raport inwentaryzacji sprzętu eventowego</h1>
+  <div class="meta">Wygenerowano: ${date} · Łącznie pozycji: ${state.items.length} · Użytkownik: ${getUserName()}</div>
+  <table>
+    <thead><tr><th>Nazwa</th><th>Kategoria</th><th>Ilość</th><th>Stan</th><th>Lokalizacja</th><th>Nr seryjny</th><th>Event</th><th>Uwagi</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+  <script>window.onload=()=>window.print()<\/script>
+  </body></html>`;
+  const w = window.open('', '_blank');
+  w.document.write(html);
+  w.document.close();
 }
 
 // ─── THEME ───
@@ -1080,11 +1312,51 @@ function initTheme() {
 initTheme();
 
 // ─── INIT ───
-if (SUPABASE_URL !== 'TWOJ_SUPABASE_URL' && state.currentUser) {
-  loadAll();
-} else {
-  render();
+async function initAuth() {
+  if (!sb) { state.authLoading = false; render(); return; }
+
+  // Obsłuż powrót po OAuth redirect
+  const { data: { session } } = await sb.auth.getSession();
+  if (session?.user) {
+    const email = session.user.email || '';
+    if (!email.endsWith('@' + ALLOWED_DOMAIN)) {
+      await sb.auth.signOut();
+      toast('Brak dostępu. Wymagane konto @' + ALLOWED_DOMAIN, 'error');
+      state.authLoading = false; render(); return;
+    }
+    state.authUser = session.user;
+    await syncUserProfile(session.user);
+    state.isAdmin = checkAdmin();
+  }
+  state.authLoading = false;
+
+  // Nasłuchuj zmian sesji
+  sb.auth.onAuthStateChange(async (event, session) => {
+    if (session?.user) {
+      const email = session.user.email || '';
+      if (!email.endsWith('@' + ALLOWED_DOMAIN)) {
+        await sb.auth.signOut();
+        toast('Brak dostępu. Wymagane konto @' + ALLOWED_DOMAIN, 'error');
+        state.authUser = null; state.isAdmin = false; render(); return;
+      }
+      state.authUser = session.user;
+      await syncUserProfile(session.user);
+      state.isAdmin = checkAdmin();
+      if (event === 'SIGNED_IN') { await loadAll(); return; }
+    } else {
+      state.authUser = null; state.isAdmin = false;
+    }
+    render();
+  });
+
+  if (state.authUser) {
+    await loadAll();
+  } else {
+    render();
+  }
 }
+
+initAuth();
 </script>
 </body>
 </html>
