@@ -6,6 +6,7 @@
 <title>Sprzęt Eventowy — Inwentaryzacja</title>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
 /* ─── KONFIGURACJA: wklej swoje klucze tutaj ─── */
 /* Patrz: README / sekcja konfiguracji poniżej     */
@@ -140,6 +141,7 @@ td.muted { color: var(--text2); font-size: 13px; }
 /* ─── BADGES ─── */
 .badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 500; font-family: var(--mono); }
 .badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.badge-stock { background: rgba(99,179,237,0.12); color: #63b3ed; }
 .badge-ok { background: var(--green-bg); color: var(--green); }
 .badge-ok::before { background: var(--green); }
 .badge-low { background: var(--amber-bg); color: var(--amber); }
@@ -521,6 +523,7 @@ function renderInventory() {
       <div><div class="page-title">Inwentaryzacja</div><div class="page-subtitle">${total} pozycji w bazie</div></div>
       <div class="topbar-actions">
         <button class="btn" onclick="exportCSV()">↓ CSV</button>
+        <button class="btn" onclick="openModal('import')">↑ Import CSV/Excel</button>
         <button class="btn btn-primary" onclick="openModal('add')">+ Dodaj sprzęt</button>
       </div>
     </div>
@@ -538,7 +541,7 @@ function renderInventory() {
       </select>
       <select id="stan-filter">
         <option value="">Każdy stan</option>
-        ${['OK','Niski stan','Brak','W naprawie'].map(s=>`<option ${fs===s?'selected':''}>${s}</option>`).join('')}
+        ${['Na stanie','OK','Niski stan','Brak','W naprawie'].map(s=>`<option ${fs===s?'selected':''}>${s}</option>`).join('')}
       </select>
     </div>
     <div class="table-wrap">
@@ -631,6 +634,7 @@ function renderModal() {
   if (state.modal === 'detail') return renderDetailModal();
   if (state.modal === 'cat-add') return renderCatModal();
   if (state.modal === 'cat-edit') return renderCatModal(true);
+  if (state.modal === 'import') return renderImportModal();
   return '';
 }
 
@@ -655,19 +659,26 @@ function renderItemModal() {
         </div>
         <div class="form-row">
           <div class="field"><label>Stan</label><select id="f-stan">
-            ${['OK','Niski stan','Brak','W naprawie'].map(s=>`<option ${(i.stan||'OK')===s?'selected':''}>${s}</option>`).join('')}
+            ${['Na stanie','OK','Niski stan','Brak','W naprawie'].map(s=>`<option ${(i.stan||'Na stanie')===s?'selected':''}>${s}</option>`).join('')}
           </select></div>
           <div class="field"><label>Lokalizacja / magazyn</label><input id="f-lok" value="${esc(i.lokalizacja||'')}"></div>
         </div>
         <div class="field"><label>Numer seryjny / inwentarzowy</label><input id="f-sn" value="${esc(i.sn||'')}"></div>
-        <div class="field"><label>Przypisz do eventu</label><select id="f-event">
-          <option value="">— brak eventu —</option>${evOptions}
-        </select></div>
-        <div class="form-row">
-          <div class="field"><label>Data wypożyczenia</label><input id="f-wyp" type="date" value="${i.data_wypozyczenia||''}"></div>
-          <div class="field"><label>Data zwrotu</label><input id="f-zwrot" type="date" value="${i.data_zwrotu||''}"></div>
-        </div>
         <div class="field"><label>Uwagi</label><textarea id="f-uwagi">${esc(i.uwagi||'')}</textarea></div>
+        <details style="margin-top:4px" ${i.event_id||i.data_wypozyczenia?'open':''}>
+          <summary style="font-size:12px;color:var(--text3);cursor:pointer;font-family:var(--mono);letter-spacing:.05em;padding:8px 0;list-style:none;display:flex;align-items:center;gap:6px">
+            <span style="color:var(--accent2)">+</span> Wypożyczenie / event (opcjonalnie)
+          </summary>
+          <div style="margin-top:10px">
+            <div class="field"><label>Przypisz do eventu</label><select id="f-event">
+              <option value="">— brak eventu —</option>${evOptions}
+            </select></div>
+            <div class="form-row">
+              <div class="field"><label>Data wypożyczenia</label><input id="f-wyp" type="date" value="${i.data_wypozyczenia||''}"></div>
+              <div class="field"><label>Data zwrotu</label><input id="f-zwrot" type="date" value="${i.data_zwrotu||''}"></div>
+            </div>
+          </div>
+        </details>
       </div>
       <div class="modal-footer">
         <button class="btn" onclick="closeModal()">Anuluj</button>
@@ -906,12 +917,14 @@ function bindEvents() {
   if (kf) kf.addEventListener('change', e => { state.filterKat = e.target.value; render(); });
   const sf = document.getElementById('stan-filter');
   if (sf) sf.addEventListener('change', e => { state.filterStan = e.target.value; render(); });
+  const imp = document.getElementById('import-file');
+  if (imp) imp.addEventListener('change', handleImportFile);
 }
 
 // ─── HELPERS ───
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function badgeHtml(stan) {
-  const map = { 'OK':'badge-ok','Niski stan':'badge-low','Brak':'badge-brak','W naprawie':'badge-repair' };
+  const map = { 'Na stanie':'badge-stock','OK':'badge-ok','Niski stan':'badge-low','Brak':'badge-brak','W naprawie':'badge-repair' };
   return `<span class="badge ${map[stan]||''}">${esc(stan)}</span>`;
 }
 function ico(name) {
@@ -924,6 +937,130 @@ function ico(name) {
     moon: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13.5 10A6 6 0 016 2.5a6 6 0 100 11 6 6 0 007.5-3.5z"/></svg>`,
   };
   return icons[name] || '';
+}
+
+// ─── IMPORT CSV/EXCEL ───
+function renderImportModal() {
+  return `<div class="modal-overlay" onclick="closeModal(event)">
+    <div class="modal" onclick="event.stopPropagation()" style="max-width:480px">
+      <div class="modal-header">
+        <h3>Import sprzętu z pliku</h3>
+        <button class="modal-close" onclick="closeModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div style="background:var(--bg3);border-radius:var(--radius);padding:12px 14px;font-size:13px;color:var(--text2);margin-bottom:16px;line-height:1.7">
+          Plik CSV lub Excel (.xlsx) musi mieć nagłówki w pierwszym wierszu.<br>
+          Obsługiwane kolumny: <span style="font-family:var(--mono);color:var(--accent2)">nazwa, kategoria, ilosc, stan, lokalizacja, sn, uwagi</span><br>
+          Kolumna <span style="font-family:var(--mono);color:var(--accent2)">nazwa</span> jest wymagana.
+        </div>
+        <div class="field">
+          <label>Wybierz plik CSV lub Excel</label>
+          <input type="file" id="import-file" accept=".csv,.xlsx,.xls" style="padding:8px 0;border:none;background:transparent;color:var(--text);font-family:var(--font);font-size:14px;width:100%">
+        </div>
+        <div id="import-preview" style="margin-top:8px"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" onclick="closeModal()">Anuluj</button>
+        <button class="btn btn-primary" onclick="executeImport()">Importuj</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+let importRows = [];
+
+function handleImportFile() {
+  const file = document.getElementById('import-file')?.files?.[0];
+  if (!file) return;
+  const ext = file.name.split('.').pop().toLowerCase();
+  const preview = document.getElementById('import-preview');
+
+  if (ext === 'csv') {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const text = e.target.result;
+      importRows = parseCSV(text);
+      showImportPreview(preview);
+    };
+    reader.readAsText(file, 'UTF-8');
+  } else if (ext === 'xlsx' || ext === 'xls') {
+    if (typeof XLSX === 'undefined') {
+      preview.innerHTML = '<div style="color:var(--red);font-size:13px">Biblioteka XLSX nie załadowana. Użyj formatu CSV.</div>';
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        const wb = XLSX.read(e.target.result, {type:'array'});
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const data = XLSX.utils.sheet_to_json(ws, {defval:''});
+        importRows = data.map(row => normalizeRow(row));
+        showImportPreview(preview);
+      } catch(err) {
+        preview.innerHTML = `<div style="color:var(--red);font-size:13px">Błąd odczytu pliku: ${err.message}</div>`;
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+}
+
+function parseCSV(text) {
+  const lines = text.replace(/\r/g,'').split('\n').filter(l=>l.trim());
+  if (!lines.length) return [];
+  const sep = lines[0].includes(';') ? ';' : ',';
+  const headers = lines[0].split(sep).map(h=>h.trim().replace(/^"|"$/g,'').toLowerCase());
+  return lines.slice(1).map(line => {
+    const vals = line.split(sep).map(v=>v.trim().replace(/^"|"$/g,''));
+    const obj = {};
+    headers.forEach((h,i) => obj[h] = vals[i]||'');
+    return normalizeRow(obj);
+  }).filter(r=>r.nazwa);
+}
+
+function normalizeRow(row) {
+  const get = (...keys) => { for(const k of keys){ const v = row[k]||row[k.toLowerCase()]||''; if(v) return String(v).trim(); } return ''; };
+  const stany = ['Na stanie','OK','Niski stan','Brak','W naprawie'];
+  let stan = get('stan','Stan','STATUS','status') || 'Na stanie';
+  if (!stany.includes(stan)) stan = 'Na stanie';
+  return {
+    nazwa: get('nazwa','Nazwa','NAME','name'),
+    kategoria: get('kategoria','Kategoria','KATEGORIA') || null,
+    ilosc: parseInt(get('ilosc','ilość','Ilość','QTY','qty','quantity'))||1,
+    stan,
+    lokalizacja: get('lokalizacja','Lokalizacja','LOKALIZACJA') || null,
+    sn: get('sn','SN','Nr seryjny','nr seryjny','serial') || null,
+    uwagi: get('uwagi','Uwagi','UWAGI','notes') || null,
+  };
+}
+
+function showImportPreview(container) {
+  if (!importRows.length) {
+    container.innerHTML = '<div style="color:var(--red);font-size:13px">Nie znaleziono danych. Sprawdź czy plik ma kolumnę "nazwa".</div>';
+    return;
+  }
+  container.innerHTML = `<div style="font-size:13px;color:var(--text2);margin-bottom:8px">Znaleziono <strong style="color:var(--green)">${importRows.length}</strong> pozycji do importu:</div>
+  <div style="max-height:160px;overflow-y:auto;background:var(--bg3);border-radius:var(--radius);padding:8px 12px">
+    ${importRows.slice(0,8).map(r=>`<div style="font-size:13px;padding:4px 0;border-bottom:1px solid var(--border)">${esc(r.nazwa)} <span style="color:var(--text3)">× ${r.ilosc}</span></div>`).join('')}
+    ${importRows.length>8?`<div style="font-size:12px;color:var(--text3);padding:4px 0">...i ${importRows.length-8} więcej</div>`:''}
+  </div>`;
+}
+
+async function executeImport() {
+  if (!importRows.length) { toast('Najpierw wybierz plik','error'); return; }
+  if (!sb) { toast('Brak połączenia z bazą','error'); return; }
+  let ok=0, fail=0;
+  const user = state.currentUser || 'import';
+  for (const row of importRows) {
+    const { data, error } = await sb.from('equipment').insert(row).select().single();
+    if (!error) {
+      ok++;
+      await sb.from('equipment_history').insert({ equipment_id: data.id, action: 'import', user_name: user, details: `Import z pliku: ${row.nazwa}` });
+    } else { fail++; }
+  }
+  toast(`Zaimportowano ${ok} pozycji${fail?', błędy: '+fail:''}`, fail?'error':'success');
+  importRows = [];
+  state.modal = null;
+  await loadItems(); await loadHistory(); render();
 }
 
 // ─── THEME ───
