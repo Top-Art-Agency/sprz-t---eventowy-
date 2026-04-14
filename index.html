@@ -656,11 +656,13 @@ function renderInventory() {
   const q = state.search.toLowerCase();
   const fk = state.filterKat;
   const fs = state.filterStan;
+  const fo = state.filterOwner;
   let list = state.items.filter(i => {
-    const mq = !q || (i.nazwa+i.kategoria+i.lokalizacja+i.sn+i.uwagi).toLowerCase().includes(q);
+    const mq = !q || (i.nazwa+i.kategoria+(i.lokalizacja||'')+(i.sn||'')+(i.uwagi||'')).toLowerCase().includes(q);
     const mk = !fk || i.kategoria === fk;
     const ms = !fs || i.stan === fs;
-    return mq && mk && ms;
+    const mo = !fo || (fo==='__own__' ? !i.owner_id : i.owner_id===fo);
+    return mq && mk && ms && mo;
   });
 
   const evMap = {};
@@ -697,6 +699,11 @@ function renderInventory() {
         <option value="">Wszystkie kategorie</option>
         ${state.categories.map(k=>`<option ${fk===k.nazwa?'selected':''}>${esc(k.nazwa)}</option>`).join('')}
       </select>
+      <select id="owner-filter">
+        <option value="">Wszyscy właściciele</option>
+        <option value="__own__" ${state.filterOwner==='__own__'?'selected':''}>— własny (bez klienta)</option>
+        ${state.clients.map(c=>`<option value="${c.id}" ${state.filterOwner===c.id?'selected':''}>${esc(c.nazwa)}</option>`).join('')}
+      </select>
       <select id="stan-filter">
         <option value="">Każdy stan</option>
         ${['Na stanie','OK','Niski stan','Brak','W naprawie'].map(s=>`<option ${fs===s?'selected':''}>${s}</option>`).join('')}
@@ -707,7 +714,7 @@ function renderInventory() {
       <table>
         <thead><tr>
           <th>Nazwa</th><th>Kategoria</th><th>Ilość</th><th>Stan</th>
-          <th>Lokalizacja</th><th>Nr seryjny</th><th>Event</th><th>Wypożyczono</th><th></th>
+          <th>Lokalizacja</th><th>Nr seryjny</th><th>Właściciel</th><th>Event</th><th></th>
         </tr></thead>
         <tbody>${list.map(i=>`<tr>
           <td class="name" style="cursor:pointer" onclick="openDetail('${i.id}')">${esc(i.nazwa)}</td>
@@ -716,8 +723,8 @@ function renderInventory() {
           <td>${badgeHtml(i.stan)}</td>
           <td class="muted">${esc(i.lokalizacja||'—')}</td>
           <td class="mono">${esc(i.sn||'—')}</td>
+          <td>${i.owner_id ? ownerBadge(i.owner_id) : '<span class="muted">—</span>'}</td>
           <td>${i.event_id ? evBadge(i.event_id) : '<span class="muted">—</span>'}</td>
-          <td class="mono">${i.data_wypozyczenia||'—'}</td>
           <td style="text-align:right;white-space:nowrap">
             ${state.isAdmin ? `
             <button class="btn btn-sm btn-ghost" onclick="openEdit('${i.id}')">Edytuj</button>
@@ -949,6 +956,12 @@ function renderItemModal() {
           <div class="field"><label>Lokalizacja / magazyn</label><input id="f-lok" value="${esc(i.lokalizacja||'')}"></div>
         </div>
         <div class="field"><label>Numer seryjny / inwentarzowy</label><input id="f-sn" value="${esc(i.sn||'')}"></div>
+        <div class="field"><label>Właściciel (klient)</label>
+          <select id="f-owner">
+            <option value="">— brak / własny —</option>
+            ${state.clients.map(c=>`<option value="${c.id}" ${i.owner_id===c.id?'selected':''}>${esc(c.nazwa)}</option>`).join('')}
+          </select>
+        </div>
         <div class="field"><label>Uwagi</label><textarea id="f-uwagi">${esc(i.uwagi||'')}</textarea></div>
         <details style="margin-top:4px" ${i.event_id||i.data_wypozyczenia?'open':''}>
           <summary style="font-size:12px;color:var(--text3);cursor:pointer;font-family:var(--mono);letter-spacing:.05em;padding:8px 0;list-style:none;display:flex;align-items:center;gap:6px">
@@ -1039,7 +1052,11 @@ function renderDetailModal() {
             <div style="font-size:11px;color:var(--text3);font-family:var(--mono);margin-bottom:4px">${l}</div>
             <div style="font-size:14px;font-weight:500">${v}</div>
           </div>`).join('')}
-          <div style="background:var(--bg3);border-radius:8px;padding:10px 12px;grid-column:1/-1">
+          <div style="background:var(--bg3);border-radius:8px;padding:10px 12px">
+            <div style="font-size:11px;color:var(--text3);font-family:var(--mono);margin-bottom:6px">Właściciel</div>
+            <div>${i.owner_id ? ownerBadge(i.owner_id) : '<span style="font-size:14px;font-weight:500">—</span>'}</div>
+          </div>
+          <div style="background:var(--bg3);border-radius:8px;padding:10px 12px">
             <div style="font-size:11px;color:var(--text3);font-family:var(--mono);margin-bottom:6px">Event</div>
             <div>${i.event_id ? evBadge(i.event_id) : '<span style="font-size:14px;font-weight:500">—</span>'}</div>
           </div>
@@ -1100,6 +1117,7 @@ async function submitItem() {
     data_wypozyczenia: document.getElementById('f-wyp').value||null,
     data_zwrotu: document.getElementById('f-zwrot').value||null,
     uwagi: document.getElementById('f-uwagi').value.trim()||null,
+    owner_id: document.getElementById('f-owner')?.value||null,
   };
   if (state.modal === 'edit') item.id = state.editItem.id;
   const ok = await saveItem(item, state.modal==='edit');
@@ -1405,21 +1423,38 @@ function renderClientDetail(clientId) {
           <div style="margin-bottom:10px"><div style="font-size:11px;color:var(--text3);font-family:var(--mono);margin-bottom:3px">${l}</div><div style="font-size:14px">${esc(v)}</div></div>`).join('')}
       </div>
     </div>
-    <div style="font-size:12px;font-family:var(--mono);color:var(--text3);letter-spacing:.05em;margin-bottom:10px">SPRZĘT UŻYWANY PRZEZ KLIENTA (${clientItems.length})</div>
-    <div class="table-wrap">
-      ${!clientItems.length ? `<div class="empty"><div class="empty-icon">📦</div><p>Brak sprzętu przypisanego do eventów tego klienta.</p></div>` : `
-      <table>
-        <thead><tr><th>Nazwa</th><th>Kategoria</th><th>Ilość</th><th>Stan</th><th>Event</th></tr></thead>
-        <tbody>${clientItems.map(i=>`<tr>
-          <td class="name">${esc(i.nazwa)}</td>
-          <td class="muted">${esc(i.kategoria||'—')}</td>
-          <td class="mono">${i.ilosc}</td>
-          <td>${badgeHtml(i.stan)}</td>
-          <td><span style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:${i._evKolor||'var(--accent2)'}">
-            <span style="width:6px;height:6px;border-radius:50%;background:${i._evKolor||'#7c6af7'}"></span>${esc(i._evNazwa)}
-          </span></td>
-        </tr>`).join('')}</tbody>
-      </table>`}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:4px">
+      <div>
+        <div style="font-size:12px;font-family:var(--mono);color:var(--text3);letter-spacing:.05em;margin-bottom:10px">WŁASNY SPRZĘT KLIENTA (${state.items.filter(i=>i.owner_id===clientId).length})</div>
+        <div class="table-wrap">
+          ${!state.items.filter(i=>i.owner_id===clientId).length ? `<div class="empty" style="padding:24px"><div class="empty-icon" style="font-size:20px">📦</div><p>Brak własnego sprzętu</p></div>` : `
+          <table>
+            <thead><tr><th>Nazwa</th><th>Kategoria</th><th>Ilość</th><th>Stan</th></tr></thead>
+            <tbody>${state.items.filter(i=>i.owner_id===clientId).map(i=>`<tr>
+              <td class="name" style="cursor:pointer" onclick="openDetail('${i.id}')">${esc(i.nazwa)}</td>
+              <td class="muted">${esc(i.kategoria||'—')}</td>
+              <td class="mono">${i.ilosc}</td>
+              <td>${badgeHtml(i.stan)}</td>
+            </tr>`).join('')}</tbody>
+          </table>`}
+        </div>
+      </div>
+      <div>
+        <div style="font-size:12px;font-family:var(--mono);color:var(--text3);letter-spacing:.05em;margin-bottom:10px">SPRZĘT NA EVENTACH KLIENTA (${clientItems.length})</div>
+        <div class="table-wrap">
+          ${!clientItems.length ? `<div class="empty" style="padding:24px"><div class="empty-icon" style="font-size:20px">📦</div><p>Brak</p></div>` : `
+          <table>
+            <thead><tr><th>Nazwa</th><th>Ilość</th><th>Event</th></tr></thead>
+            <tbody>${clientItems.map(i=>`<tr>
+              <td class="name">${esc(i.nazwa)}</td>
+              <td class="mono">${i.ilosc}</td>
+              <td><span style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:${i._evKolor||'var(--accent2)'}">
+                <span style="width:6px;height:6px;border-radius:50%;background:${i._evKolor||'#7c6af7'}"></span>${esc(i._evNazwa)}
+              </span></td>
+            </tr>`).join('')}</tbody>
+          </table>`}
+        </div>
+      </div>
     </div>`;
 }
 
@@ -1552,6 +1587,8 @@ function bindEvents() {
   if (kf) kf.addEventListener('change', e => { state.filterKat = e.target.value; render(); });
   const sf = document.getElementById('stan-filter');
   if (sf) sf.addEventListener('change', e => { state.filterStan = e.target.value; render(); });
+  const of_ = document.getElementById('owner-filter');
+  if (of_) of_.addEventListener('change', e => { state.filterOwner = e.target.value; render(); });
   const imp = document.getElementById('import-file');
   if (imp) imp.addEventListener('change', handleImportFile);
   const evs = document.getElementById('ev-search');
@@ -1568,6 +1605,15 @@ function evDot(eventId) {
 function evColor(eventId) {
   return state.events.find(e => e.id === eventId)?.kolor || '#7c6af7';
 }
+function ownerBadge(ownerId) {
+  const c = state.clients.find(x => x.id === ownerId);
+  if (!c) return '<span class="muted">—</span>';
+  return `<span style="display:inline-flex;align-items:center;gap:5px;background:rgba(99,179,237,0.12);border:1px solid rgba(99,179,237,0.3);color:#63b3ed;font-size:11px;font-family:var(--mono);padding:3px 8px;border-radius:20px;white-space:nowrap">
+    <span style="width:6px;height:6px;border-radius:50%;background:#63b3ed;flex-shrink:0"></span>
+    ${esc(c.nazwa)}
+  </span>`;
+}
+
 function evBadge(eventId) {
   const ev = state.events.find(e => e.id === eventId);
   if (!ev) return '<span class="muted">—</span>';
