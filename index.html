@@ -1870,6 +1870,8 @@ async function executeImport() {
 function generatePDF() {
   const evMap = {};
   state.events.forEach(e => evMap[e.id] = e.nazwa);
+  const clMap = {};
+  state.clients.forEach(c => clMap[c.id] = c.nazwa);
   const date = new Date().toLocaleDateString('pl-PL');
   const rows = state.items.map(i => `
     <tr>
@@ -1879,26 +1881,31 @@ function generatePDF() {
       <td>${esc(i.stan)}</td>
       <td>${esc(i.lokalizacja||'—')}</td>
       <td>${esc(i.sn||'—')}</td>
+      <td>${i.owner_id && clMap[i.owner_id] ? esc(clMap[i.owner_id]) : '—'}</td>
       <td>${i.event_id && evMap[i.event_id] ? esc(evMap[i.event_id]) : '—'}</td>
+      <td>${i.data_wypozyczenia||'—'}${i.data_zwrotu?' – '+i.data_zwrotu:''}</td>
       <td>${esc(i.uwagi||'—')}</td>
     </tr>`).join('');
   const html = `<!DOCTYPE html><html lang="pl"><head><meta charset="UTF-8">
   <title>Raport inwentaryzacji</title>
   <style>
-    body { font-family: Arial, sans-serif; font-size: 11px; color: #111; margin: 20px; }
-    h1 { font-size: 18px; margin-bottom: 4px; }
-    .meta { color: #666; font-size: 11px; margin-bottom: 16px; }
+    body { font-family: Arial, sans-serif; font-size: 10px; color: #111; margin: 20px; }
+    h1 { font-size: 16px; margin-bottom: 4px; }
+    .meta { color: #666; font-size: 10px; margin-bottom: 16px; }
     table { width: 100%; border-collapse: collapse; }
-    th { background: #1a1a2e; color: #fff; padding: 7px 8px; text-align: left; font-size: 10px; letter-spacing: .05em; }
-    td { padding: 6px 8px; border-bottom: 1px solid #e5e5e5; vertical-align: top; }
+    th { background: #1a1a2e; color: #fff; padding: 6px 7px; text-align: left; font-size: 9px; letter-spacing: .05em; text-transform: uppercase; }
+    td { padding: 5px 7px; border-bottom: 1px solid #e5e5e5; vertical-align: top; }
     tr:nth-child(even) td { background: #f9f9f9; }
-    .badge { display:inline-block; padding: 2px 7px; border-radius: 10px; font-size: 10px; font-weight: 600; }
-    @media print { body { margin: 0; } }
+    @media print { body { margin: 0; } @page { size: A4 landscape; margin: 10mm; } }
   </style></head><body>
   <h1>Raport inwentaryzacji sprzętu eventowego</h1>
-  <div class="meta">Wygenerowano: ${date} · Łącznie pozycji: ${state.items.length} · Użytkownik: ${getUserName()}</div>
+  <div class="meta">Wygenerowano: ${date} &nbsp;·&nbsp; Łącznie pozycji: ${state.items.length} &nbsp;·&nbsp; Użytkownik: ${getUserName()}</div>
   <table>
-    <thead><tr><th>Nazwa</th><th>Kategoria</th><th>Ilość</th><th>Stan</th><th>Lokalizacja</th><th>Nr seryjny</th><th>Event</th><th>Uwagi</th></tr></thead>
+    <thead><tr>
+      <th>Nazwa</th><th>Kategoria</th><th>Ilość</th><th>Stan</th>
+      <th>Lokalizacja</th><th>Nr seryjny</th><th>Właściciel</th>
+      <th>Event</th><th>Daty</th><th>Uwagi</th>
+    </tr></thead>
     <tbody>${rows}</tbody>
   </table>
   <script>window.onload=()=>window.print()<\/script>
