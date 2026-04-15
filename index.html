@@ -1091,7 +1091,13 @@ function openModal(type) { state.modal = type; render(); }
 function closeModal(e) { if (e && e.target !== e.currentTarget) return; state.modal=null; state.editItem=null; render(); }
 function openEdit(id) { state.editItem = state.items.find(i=>i.id===id); state.modal='edit'; render(); }
 function openDetail(id) { state.detailItem = state.items.find(i=>i.id===id); state.modal='detail'; render(); }
-function setView(v) { state.view=v; render(); }
+function setView(v) { 
+  state.view=v; 
+  state.selectedEventId=null; 
+  state.selectedClientId=null;
+  state.evSearch='';
+  render(); 
+}
 function filterByStan(stan) {
   state.filterStan = state.filterStan === stan ? '' : stan;
   render();
