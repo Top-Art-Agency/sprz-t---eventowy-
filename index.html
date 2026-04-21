@@ -1050,8 +1050,8 @@ function renderEventModal(isEdit=false) {
           <div class="field"></div>
         </div>
         <div class="form-row">
-          <div class="field"><label>Data rozpoczęcia</label><input id="e-start" type="date" value="${ev.date_start||''}"></div>
-          <div class="field"><label>Data zakończenia</label><input id="e-end" type="date" value="${ev.date_end||''}"></div>
+          <div class="field"><label>Data rozpoczęcia *</label><input id="e-start" type="date" value="${ev.date_start||''}" required></div>
+          <div class="field"><label>Data zakończenia *</label><input id="e-end" type="date" value="${ev.date_end||''}" required></div>
         </div>
         <div class="field">
           <label>Kolor eventu</label>
@@ -1208,6 +1208,11 @@ function selectEventColor(el) {
 async function submitEvent(isEdit=false) {
   const nazwa = document.getElementById('e-nazwa')?.value?.trim();
   if (!nazwa) { toast('Podaj nazwę eventu','error'); return; }
+  const dateStart = document.getElementById('e-start').value;
+  const dateEnd = document.getElementById('e-end').value;
+  if (!dateStart) { toast('Podaj datę rozpoczęcia eventu','error'); return; }
+  if (!dateEnd) { toast('Podaj datę zakończenia eventu','error'); return; }
+  if (dateEnd < dateStart) { toast('Data zakończenia nie może być wcześniej niż data rozpoczęcia','error'); return; }
   const ev = {
     nazwa,
     miasto: document.getElementById('e-miasto').value.trim()||null,
